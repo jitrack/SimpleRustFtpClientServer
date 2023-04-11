@@ -2,11 +2,28 @@ use serde::{Deserialize, Serialize};
 use crate::core::{CommandId, FtpStatusCode};
 use serde_with::{serde_as, Bytes};
 
+pub fn deserialize<T>(data: & Vec<u8>) -> T where T: for<'a> serde::de::Deserialize<'a>, {
+    return bincode::deserialize::<T>(&data[..]).unwrap()
+}
+
 // TCP
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
-pub struct PutPacket {
+pub struct CommandPacket {
     pub cmd: CommandId,
+}
+
+impl CommandPacket {
+    pub fn new(cmd: CommandId) -> Self {
+        return Self {
+            cmd,
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FileInfoPacket {
     pub size: u64,
     #[serde_as(as = "Bytes")]
     pub name: [u8; 40],

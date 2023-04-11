@@ -1,6 +1,6 @@
 use std::{env, thread, time};
 use std::fs::File;
-use crate::core::{CommandId, CoreT, FtpStatusCode};
+use crate::core::{CommandId, CoreT, ERROR_FAILED_TO_CREATE_FILE, ERROR_FILE_DOESNT_EXIST, ERROR_INVALID_NUMBER_OF_ARGUMENTS, FtpStatusCode, receive_file, send_file};
 use std::io::{self, BufRead, BufReader};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpStream, UdpSocket};
 use std::io::{Read, Write};
@@ -10,17 +10,16 @@ use std::process::Command;
 use std::str::from_utf8;
 use crate::tcp::tcp::{read_message, Tcp, write_message};
 use colored::*;
-use crate::tcp::packet::{FilePacket, PutPacket, ResponseFilePacket, ResponsePacket};
+use crate::tcp::packet::{CommandPacket, FilePacket, FileInfoPacket, ResponseFilePacket, ResponsePacket};
 use std::os::unix::prelude::FileExt;
+use exitcode::OK;
 use num_traits::ToPrimitive;
 use crate::print_exception;
-use crate::udp::udp::{FILE_BLOC_SIZE, read_message_udp, write_message_udp};
+use crate::udp::udp::{FILE_BLOC_SIZE, read_message_udp, Udp, write_message_udp};
 
 pub struct Client {
-    is_running: bool,
-    // tcp.rs: Tcp,
-    udp: UdpSocket,
-    stream: TcpStream
+    tcp: Tcp,
+    udp: Udp
 }
 
 trait ClientT {}
@@ -31,16 +30,16 @@ impl CoreT for Client {
             let (cmd, args) = self.get_commands();
             match cmd.to_lowercase().as_ref() {
                 "exit" => {
+                    self.exit();
                     println!("Closing connection");
                     break;
                 }
                 "get" => {
-                    // self.get(&mut client, &args, ftp_mode, ftp_type)
+                    self.get(&args);
                 }
                 "put" => {
                     self.put(&args);
                 }
-                // "help" | "?" | "usage" => utils::print_help(&args),
                 _ => {
                     println!("{} {}", "Unknown command:".red(), cmd);
                     continue;
@@ -58,7 +57,7 @@ impl Client {
         let address = format!("{}:{}", ip, port);
         let stream = match TcpStream::connect(&address) {
             Ok(mut stream) => {
-                println!("{} {}", "Host address:".bold(), format!("{}:{}", stream.local_addr().unwrap().ip(), stream.local_addr().unwrap().port()).underline());
+                println!("{} {}", "Host address:".bold(), format!("{}", stream.local_addr().unwrap().to_string()).underline());
                 println!("{} {}", "Successfully connected to server".green().bold(), address.underline());
                 Ok(stream)
             },
@@ -69,75 +68,94 @@ impl Client {
         }?;
         let udp = UdpSocket::bind(stream.local_addr().unwrap()).expect("Could not bind client socket");
         udp.connect(stream.peer_addr().unwrap()).expect("Could not connect to server");
-        let client = Client { is_running: true, udp, stream };
+        let client = Client { udp: Udp { socket: udp }, tcp: Tcp { stream } };
         Ok(client)
     }
 
     fn put(&mut self, file_path: &str) -> std::io::Result<()> {
-        self.udp.set_read_timeout(Some(time::Duration::from_secs(3))).expect("set_read_timeout call failed");
-        let mut file = File::open(file_path)?;
-        let mut contents = String::new();
+        let args: Vec<&str> = file_path.split_whitespace().collect();
+        if args.len() != 1 {
+            println!("{} {}", "Error:".red(), ERROR_INVALID_NUMBER_OF_ARGUMENTS);
+            return Ok(());
+        }
+
         let path = Path::new(file_path);
+        if !path.exists()  || !path.is_file() {
+            println!("{} {}", "Error:".red(), ERROR_FILE_DOESNT_EXIST);
+            return Ok(());
+        }
+
         let file_name = format!("{}", path.file_name().unwrap().to_str().unwrap());
-        println!("file: \"{}\"", file_name);
 
-        let mut packet = PutPacket { cmd: CommandId::Put, size: path.metadata()?.len(), name: [0; 40] };
+        self.tcp.write(&CommandPacket::new(CommandId::Put));
+
+        let mut packet = FileInfoPacket { size: path.metadata()?.len(), name: [0; 40] };
         packet.name[..file_name.len()].copy_from_slice(file_name.as_bytes());
+        self.tcp.write(&packet);
 
-        write_message(&mut self.stream, bincode::serialize(&packet).unwrap());
-
-        let received = read_message(&mut self.stream);
-        let res = print_exception(bincode::deserialize::<ResponsePacket>(&received[..]));
+        let res = self.tcp.read::<ResponsePacket>();
         if res.status == FtpStatusCode::Error {
             println!("{} {}", "Error:".red(), String::from_utf8_lossy(&res.message));
             return Ok(());
         }
 
-        let mut buffer: [u8; FILE_BLOC_SIZE] = [0; FILE_BLOC_SIZE];
-        let mut offset = 0;
-        let mut file_packet = FilePacket { index: 0, is_last: false, data_size: FILE_BLOC_SIZE, data: [0; FILE_BLOC_SIZE] };
-
-        loop {
-            let num_bytes_read = file.read_at(& mut buffer, offset)?;
-            offset += num_bytes_read.to_u64().unwrap();
-
-            file_packet.data = [0; FILE_BLOC_SIZE];
-            if num_bytes_read != FILE_BLOC_SIZE {
-                file_packet.is_last = true;
-                file_packet.data_size = num_bytes_read;
+        let mut file = match File::open(file_path) {
+            Ok(file) => file,
+            Err(_) => {
+                let mut error_packet = ResponsePacket { status: FtpStatusCode::Error, message: [0; 150] };
+                let error_message = "This file does not exist".to_string();
+                error_packet.message[..ERROR_FAILED_TO_CREATE_FILE.len()].copy_from_slice(ERROR_FAILED_TO_CREATE_FILE.as_bytes());
+                self.tcp.write(&error_packet);
+                return Ok(())
             }
-            file_packet.data[..buffer.len()].copy_from_slice(&buffer);
-            let serialized_file_packet = bincode::serialize(&file_packet).unwrap();
+        };
+        self.tcp.write(&ResponsePacket { status: FtpStatusCode::Ok, message: [0; 150] });
 
-            for retry in 1..7 {
-                write_message_udp(&mut self.udp, serialized_file_packet.clone());
-                match read_message_udp(&mut self.udp) {
-                    Some(raw_packet) => {
-                        // let response_file_packet = bincode::deserialize::<ResponseFilePacket>(&raw_packet[..]).unwrap();
-                        // if response_file_packet.index == file_packet.index {
-                        //     break;
-                        // }
-                        break;
-                    },
-                    None => {
-                        if retry == 6 {
-                            println!("{} {}", "Error:".red(), "Abort");
-                            return Ok(())
-                            // write_message_udp(udp, bincode::serialize(&ResponseFilePacket { index: file_packet.index, status: FtpStatusCode::Error }).unwrap());
-                        }
-                        println!("{} {} {} {}", "Error:".red(), "Server is not responding: ", retry, " try");
-                    }
-                }
+        return send_file(&mut file, &mut self.udp);
+    }
 
-            }
-
-            file_packet.index += 1;
-
-            if num_bytes_read != FILE_BLOC_SIZE {
-                break;
-            }
+    fn get(&mut self, input: &str) -> std::io::Result<()> {
+        let args: Vec<&str> = input.split_whitespace().collect();
+        if args.len() < 1 || args.len() > 2 {
+            println!("{} {}", "Error:".red(), ERROR_INVALID_NUMBER_OF_ARGUMENTS);
+            return Ok(());
         }
-        Ok(())
+
+        self.tcp.write(&CommandPacket::new(CommandId::Get));
+
+        let mut packet = FileInfoPacket { size: 0, name: [0; 40] };
+        packet.name[..args[0].len()].copy_from_slice(args[0].as_bytes());
+        self.tcp.write(&packet);
+
+        let res = self.tcp.read::<ResponsePacket>();
+        if res.status == FtpStatusCode::Error {
+            println!("{} {}", "Error:".red(), String::from_utf8_lossy(&res.message));
+            return Ok(());
+        }
+
+        let mut locations = std::fs::canonicalize("./").unwrap().to_str().unwrap().to_string();
+        if args.len() == 2 {
+            locations = format!("{}/{}", locations, args[1]);
+        } else {
+            locations = format!("{}/{}", locations, args[0]);
+        }
+
+
+        let mut file = match std::fs::File::create(locations) {
+            Ok(file) => file,
+            Err(e) => {
+                let mut error_packet = ResponsePacket { status: FtpStatusCode::Error, message: [0; 150] };
+                error_packet.message[..ERROR_FAILED_TO_CREATE_FILE.len()].copy_from_slice(ERROR_FAILED_TO_CREATE_FILE.as_bytes());
+                self.tcp.write(&error_packet);
+                return Ok(())
+            }
+        };
+        self.tcp.write(&ResponsePacket{ status: FtpStatusCode::Ok, message: [0; 150] });
+        return receive_file(&mut file,&mut self.udp);
+    }
+
+    fn exit(&mut self) {
+        self.tcp.write(&CommandPacket::new(CommandId::Exit));
     }
 
     fn get_commands(&self) -> (String, String) {
@@ -150,10 +168,8 @@ impl Client {
             Some(pos) => (&line[0..pos], &line[pos + 1..]),
             None => (line, "".as_ref()),
         };
-
         let s1 = format!("{}", cmd);
         let s2 = format!("{}", args);
-        println!("command: {}, args: {}", cmd, args);
         (s1, s2)
     }
 }
