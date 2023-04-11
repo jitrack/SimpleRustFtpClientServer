@@ -8,14 +8,14 @@ use std::ops::Add;
 use std::path::Path;
 use std::process::Command;
 use std::str::from_utf8;
-use crate::tcp::tcp::{read_message, Tcp, write_message};
+use crate::tcp::tcp::{Tcp};
 use colored::*;
 use crate::tcp::packet::{CommandPacket, FilePacket, FileInfoPacket, ResponseFilePacket, ResponsePacket};
 use std::os::unix::prelude::FileExt;
 use exitcode::OK;
 use num_traits::ToPrimitive;
 use crate::print_exception;
-use crate::udp::udp::{FILE_BLOC_SIZE, read_message_udp, Udp, write_message_udp};
+use crate::udp::udp::{Udp};
 
 pub struct Client {
     tcp: Tcp,

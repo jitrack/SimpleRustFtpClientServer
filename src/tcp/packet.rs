@@ -23,6 +23,12 @@ impl CommandPacket {
 
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
+pub struct UdpConfigPacket {
+    pub packet_size: usize,
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct FileInfoPacket {
     pub size: u64,
     #[serde_as(as = "Bytes")]

@@ -6,10 +6,10 @@ use std::{thread, time};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-use crate::tcp::tcp::{read_message, Tcp, write_message};
+use crate::tcp::tcp::{Tcp};
 use colored::*;
-use crate::tcp::packet::{CommandPacket, deserialize, FilePacket, FileInfoPacket, ResponseFilePacket, ResponsePacket};
-use crate::udp::udp::{read_message_udp, Udp, write_message_udp};
+use crate::tcp::packet::{CommandPacket, deserialize, FilePacket, FileInfoPacket, ResponseFilePacket, ResponsePacket, UdpConfigPacket};
+use crate::udp::udp::{Udp};
 use std::str;
 
 pub struct Server {
@@ -48,6 +48,8 @@ impl Server {
         Ok(Server { listener })
     }
 }
+
+pub const FILE_BLOC_SIZE: usize = 1024;
 
 fn handle_client(mut tcp: Tcp) -> std::io::Result<()> {
     let mut socket = UdpSocket::bind(tcp.stream.local_addr().unwrap()).expect("Could not bind an UDP socket");
@@ -88,6 +90,12 @@ fn put(udp: &mut Udp, tcp: &mut Tcp) -> std::io::Result<()> {
         }
     };
     tcp.write(&ResponsePacket{ status: FtpStatusCode::Ok, message: [0; 150] });
+
+    let res = tcp.read::<ResponsePacket>();
+    if res.status == FtpStatusCode::Error {
+        println!("{} {}", "Error:".red(), String::from_utf8_lossy(&res.message));
+        return Ok(());
+    }
 
     return receive_file(&mut file, udp);
 }

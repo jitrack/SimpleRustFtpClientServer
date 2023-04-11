@@ -6,7 +6,7 @@ use num_derive::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use crate::tcp::packet::{FilePacket, FileInfoPacket, ResponseFilePacket, ResponsePacket};
 use crate::tcp::tcp::Tcp;
-use crate::udp::udp::{FILE_BLOC_SIZE, Udp};
+use crate::udp::udp::{Udp};
 use std::io::{Read, Write};
 use std::os::unix::prelude::FileExt;
 use num_traits::ToPrimitive;
@@ -27,6 +27,8 @@ pub enum FtpStatusCode {
     Ok,
     Error,
 }
+
+pub const FILE_BLOC_SIZE: usize = 1024;
 
 pub fn send_file(file: &mut File, udp: &mut Udp) -> std::io::Result<()> {
     udp.set_read_timeout(Some(time::Duration::from_secs(3)));
@@ -49,7 +51,7 @@ pub fn send_file(file: &mut File, udp: &mut Udp) -> std::io::Result<()> {
 
         for retry in 1..7 {
             udp.write_raw(serialized_file_packet.clone());
-            match udp.read_raw() {
+            match udp.read::<ResponseFilePacket>() {
                 Some(raw_packet) => {
                     // let response_file_packet = bincode::deserialize::<ResponseFilePacket>(&raw_packet[..]).unwrap();
                     // if response_file_packet.index == file_packet.index {
@@ -79,6 +81,7 @@ pub fn send_file(file: &mut File, udp: &mut Udp) -> std::io::Result<()> {
 }
 
 pub fn receive_file(file: &mut File, udp: &mut Udp) -> std::io::Result<()> {
+    udp.set_read_timeout(None);
     loop {
         let packet = udp.read::<FilePacket>().unwrap();
         udp.write(&ResponseFilePacket { index: packet.index, status: FtpStatusCode::Ok });
