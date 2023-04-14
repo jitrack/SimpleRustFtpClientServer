@@ -10,10 +10,7 @@ pub struct Udp {
 
 impl Udp {
     pub fn read<T>(&mut self) -> Option<T> where T: for<'a> serde::de::Deserialize<'a> {
-        return match self.read_raw(size_of::<T>()) {
-            Some(received) => Some(bincode::deserialize::<T>(&received[..]).unwrap()),
-            None => None
-        }
+        return self.read_raw(size_of::<T>()).and_then(|received| bincode::deserialize::<T>(&received[..]).ok())
     }
 
     pub fn read_raw(&mut self, size: usize) -> Option<Vec<u8>> {

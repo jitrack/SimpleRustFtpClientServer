@@ -33,20 +33,19 @@ pub const FILE_BLOC_SIZE: usize = 1024;
 pub fn send_file(file: &mut File, udp: &mut Udp) -> std::io::Result<()> {
     udp.set_read_timeout(Some(time::Duration::from_secs(3)));
 
-    let mut buffer: [u8; FILE_BLOC_SIZE] = [0; FILE_BLOC_SIZE];
     let mut offset = 0;
     let mut file_packet = FilePacket { index: 0, is_last: false, data_size: FILE_BLOC_SIZE, data: [0; FILE_BLOC_SIZE] };
 
     loop {
-        let num_bytes_read = file.read_at(& mut buffer, offset)?;
+        file_packet.data = [0; FILE_BLOC_SIZE];
+        let num_bytes_read = file.read_at(& mut file_packet.data, offset)?;
         offset += num_bytes_read.to_u64().unwrap();
 
-        file_packet.data = [0; FILE_BLOC_SIZE];
         if num_bytes_read != FILE_BLOC_SIZE {
             file_packet.is_last = true;
             file_packet.data_size = num_bytes_read;
         }
-        file_packet.data[..buffer.len()].copy_from_slice(&buffer);
+
         let serialized_file_packet = bincode::serialize(&file_packet).unwrap();
 
         for retry in 1..7 {
